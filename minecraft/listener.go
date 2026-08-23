@@ -124,6 +124,15 @@ type ListenConfig struct {
 	// on the same connection.
 	EnableBatchReading bool
 
+	// LowLevelMode, if set to true, limits the connection sequence to the network settings exchange,
+	// the Login packet and the encryption handshake. Accept returns the connection as soon as the
+	// handshake is complete. Every packet after the handshake, starting with the ClientCacheStatus
+	// and ResourcePackClientResponse packets, is passed to the caller through Conn.ReadPacket or
+	// Conn.ReadBatch. The caller performs the rest of the login sequence itself: it sends the
+	// PlayStatus (login success), resource pack, StartGame and spawn packets. Conn.StartGame and
+	// Conn.GameData must not be used in this mode. Authentication and the Allow filter still apply.
+	LowLevelMode bool
+
 	// Allow filters what connections are allowed to connect to the Server. The
 	// address, identity data, and client data of the connection are passed. If
 	// Allow returns false, the connection is closed with the string returned as
@@ -446,6 +455,7 @@ func (listener *Listener) createConn(netConn net.Conn) {
 	conn.disconnectOnUnknownPacket = !listener.cfg.AllowUnknownPackets
 	conn.disconnectOnInvalidPacket = !listener.cfg.AllowInvalidPackets
 	conn.batchMode = listener.cfg.EnableBatchReading
+	conn.lowLevelMode = listener.cfg.LowLevelMode
 
 	if listener.playerCount.Load() == int32(listener.cfg.MaximumPlayers) && listener.cfg.MaximumPlayers != 0 {
 		// The server was full. We kick the player immediately and close the connection.

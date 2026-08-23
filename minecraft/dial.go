@@ -139,6 +139,16 @@ type Dialer struct {
 	// packets received in a single batch from the remote connection, which can improve performance
 	// for high-throughput scenarios. Do not mix ReadPacket() and ReadBatch() calls on the same connection.
 	EnableBatchReading bool
+
+	// LowLevelMode, if set to true, limits the connection sequence to the network settings exchange,
+	// the Login packet and the encryption handshake. Dial returns the connection as soon as the
+	// handshake is complete. Every packet after the handshake, starting with the PlayStatus (login
+	// success) packet, is passed to the caller through Conn.ReadPacket or Conn.ReadBatch. The caller
+	// performs the rest of the login sequence itself: it responds to the resource pack, StartGame
+	// and spawn packets. Conn.DoSpawn and Conn.GameData must not be used in this mode. When
+	// handling the ItemRegistry packet, call Conn.SetShieldID so that items are read and written
+	// correctly.
+	LowLevelMode bool
 }
 
 // Dial dials a Minecraft connection to the address passed over the network passed. The network is typically
@@ -306,6 +316,7 @@ func (d Dialer) DialContextNetwork(ctx context.Context, network Network, address
 	conn.disconnectOnUnknownPacket = d.DisconnectOnUnknownPackets
 	conn.maxDecompressedLen = math.MaxInt
 	conn.batchMode = d.EnableBatchReading
+	conn.lowLevelMode = d.LowLevelMode
 
 	defaultIdentityData(&conn.identityData)
 	defaultClientData(address, conn.identityData.DisplayName, &conn.clientData)
@@ -348,7 +359,14 @@ func (d Dialer) DialContextNetwork(ctx context.Context, network Network, address
 		return nil, conn.closeErr("dial")
 	case <-readyForLogin:
 		// We've received our network settings, so we can now send our login request.
-		conn.expect(packet.IDServerToClientHandshake, packet.IDPlayStatus)
+		if d.LowLevelMode {
+			// Only the encryption handshake is handled internally. Any other packet received after
+			// the Login packet hands the connection to the caller.
+			conn.expect(packet.IDServerToClientHandshake)
+			conn.loginSent.Store(true)
+		} else {
+			conn.expect(packet.IDServerToClientHandshake, packet.IDPlayStatus)
+		}
 		if err := conn.WritePacket(&packet.Login{ConnectionRequest: request, ClientProtocol: d.Protocol.ID()}); err != nil {
 			return nil, conn.wrap(fmt.Errorf("send login: %w", err), "dial")
 		}

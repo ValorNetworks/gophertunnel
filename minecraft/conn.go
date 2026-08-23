@@ -155,6 +155,14 @@ type Conn struct {
 	automaticFlushDisabled    atomic.Bool
 	hdr                       *packet.Header
 
+	// lowLevelMode indicates that the connection only completes the network settings and encryption
+	// handshake internally. After the handshake, every packet is passed to the caller through
+	// ReadPacket/ReadBatch, and the caller performs the rest of the login sequence itself.
+	lowLevelMode bool
+	// loginSent indicates that a Login packet was sent to the server. It is only used by low-level
+	// client connections to detect when a server skips the encryption handshake.
+	loginSent atomic.Bool
+
 	// readyToLogin is a bool indicating if the connection is ready to login. This is used to ensure that the client
 	// has received the relevant network settings before the login sequence starts.
 	readyToLogin bool
@@ -335,6 +343,19 @@ func (conn *Conn) GameData() GameData {
 // Proto returns the protocol of the connection.
 func (conn *Conn) Proto() Protocol {
 	return conn.proto
+}
+
+// ShieldID returns the shield item runtime ID that the connection uses to read and write items.
+func (conn *Conn) ShieldID() int32 {
+	return conn.shieldID.Load()
+}
+
+// SetShieldID sets the shield item runtime ID that the connection uses to read and write items.
+// Callers that handle the ItemRegistry packet themselves, such as in low-level mode, must call
+// this with the runtime ID of the 'minecraft:shield' item so that items are read and written
+// correctly.
+func (conn *Conn) SetShieldID(id int32) {
+	conn.shieldID.Store(id)
 }
 
 // StartGame starts the game for a client that connected to the server. StartGame should be called for a Conn
@@ -1002,6 +1023,18 @@ func (conn *Conn) deferPacket(pk *packetData) {
 	conn.deferredPackets = append(conn.deferredPackets, pk)
 }
 
+// deferUnexpected defers a packet that was not expected in the login sequence. For a low-level
+// client connection that already sent its Login packet, an unexpected packet means the server
+// skipped the encryption handshake. In that case the handshake is considered complete and the
+// connection is handed to the caller with the packet deferred.
+func (conn *Conn) deferUnexpected(pk *packetData) {
+	if conn.lowLevelMode && conn.loginSent.Load() && !conn.loggedIn {
+		conn.expect()
+		conn.loggedIn = true
+	}
+	conn.deferPacket(pk)
+}
+
 // receive receives an incoming serialised packet from the underlying connection. If the connection is not yet
 // logged in, the packet is immediately handled.
 func (conn *Conn) receive(data []byte) error {
@@ -1080,7 +1113,7 @@ func (conn *Conn) receiveMultiple(frames [][]byte) error {
 			}
 
 			if !conn.loggedIn || conn.waitingForSpawn.Load() {
-				conn.deferPacket(pkData)
+				conn.deferUnexpected(pkData)
 				continue
 			}
 			// Not an expected packet: Forward to the batch for user consumption.
@@ -1119,7 +1152,7 @@ func (conn *Conn) handle(pkData *packetData) error {
 	}
 	// This is not the packet we expected next in the login sequence. We push it back so that it may
 	// be handled by the user.
-	conn.deferPacket(pkData)
+	conn.deferUnexpected(pkData)
 	return nil
 }
 
@@ -1319,6 +1352,13 @@ type publicKeyConn interface {
 
 // handleClientToServerHandshake handles an incoming ClientToServerHandshake packet.
 func (conn *Conn) handleClientToServerHandshake() error {
+	if conn.lowLevelMode {
+		// The handshake is complete. All packets from this point on are passed to the caller, which
+		// performs the rest of the login sequence itself.
+		conn.expect()
+		conn.loggedIn = true
+		return nil
+	}
 	// The next expected packet is a resource pack client response.
 	conn.expect(packet.IDResourcePackClientResponse, packet.IDClientCacheStatus)
 	if err := conn.WritePacket(&packet.PlayStatus{Status: packet.PlayStatusLoginSuccess}); err != nil {
@@ -1394,6 +1434,12 @@ func (conn *Conn) handleServerToClientHandshake(pk *packet.ServerToClientHandsha
 
 	// We write a ClientToServerHandshake packet (which has no payload) as a response.
 	_ = conn.WritePacket(&packet.ClientToServerHandshake{})
+	if conn.lowLevelMode {
+		// The handshake is complete. All packets from this point on are passed to the caller, which
+		// performs the rest of the login sequence itself.
+		conn.expect()
+		conn.loggedIn = true
+	}
 	return nil
 }
 
