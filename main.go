@@ -97,12 +97,22 @@ func handleConn(conn *minecraft.Conn, listener *minecraft.Listener, src oauth2.T
 		defer listener.Disconnect(conn, "connection lost")
 		defer serverConn.Close()
 		for {
-			pks, err := conn.ReadBatch()
+			pks, err := conn.ReadRawBatch()
 			if err != nil {
 				return
 			}
 			for _, pk := range pks {
-				if err := serverConn.WritePacket(pk); err != nil {
+				if pk.Header.PacketID == packet.IDPlayerAuthInput {
+					decoded, err := conn.DecodeRawPacket(pk)
+					if err != nil {
+						log.Printf("decode PlayerAuthInput: %v", err)
+					}
+					if input, ok := decoded[0].(*packet.PlayerAuthInput); ok {
+						serverConn.WritePacket(input)
+						continue
+					}
+				}
+				if err := serverConn.WriteRawPacket(pk); err != nil {
 					var disc minecraft.DisconnectError
 					if ok := errors.As(err, &disc); ok {
 						_ = listener.Disconnect(conn, disc.Error())
@@ -119,7 +129,7 @@ func handleConn(conn *minecraft.Conn, listener *minecraft.Listener, src oauth2.T
 		defer serverConn.Close()
 		defer listener.Disconnect(conn, "connection lost")
 		for {
-			pks, err := serverConn.ReadBatch()
+			pks, err := serverConn.ReadRawBatch()
 			if err != nil {
 				var disc minecraft.DisconnectError
 				if ok := errors.As(err, &disc); ok {
@@ -128,15 +138,27 @@ func handleConn(conn *minecraft.Conn, listener *minecraft.Listener, src oauth2.T
 				return
 			}
 			for _, pk := range pks {
-				if registry, ok := pk.(*packet.ItemRegistry); ok {
-					for _, item := range registry.Items {
-						if item.Name == "minecraft:shield" {
-							conn.SetShieldID(int32(item.RuntimeID))
-							serverConn.SetShieldID(int32(item.RuntimeID))
+				// The item registry is decoded to learn the shield runtime ID, which is needed to
+				// decode the item fields of PlayerAuthInput correctly.
+				if pk.Header.PacketID == packet.IDItemRegistry {
+					decoded, err := serverConn.DecodeRawPacket(pk)
+					if err != nil {
+						log.Printf("decode ItemRegistry: %v", err)
+					}
+					for _, dpk := range decoded {
+						registry, ok := dpk.(*packet.ItemRegistry)
+						if !ok {
+							continue
+						}
+						for _, item := range registry.Items {
+							if item.Name == "minecraft:shield" {
+								conn.SetShieldID(int32(item.RuntimeID))
+								serverConn.SetShieldID(int32(item.RuntimeID))
+							}
 						}
 					}
 				}
-				if err := conn.WritePacket(pk); err != nil {
+				if err := conn.WriteRawPacket(pk); err != nil {
 					return
 				}
 			}

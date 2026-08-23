@@ -631,6 +631,113 @@ func (conn *Conn) ReadBatchBytes() ([][]byte, error) {
 	}
 }
 
+// RawPacket holds a packet as it was read from the connection: the parsed header and the serialised
+// payload that follows it. The payload is in the wire format of the remote connection and is not
+// converted to the latest protocol. Both fields may be modified freely before the packet is passed
+// to (*Conn).WriteRawPacket, which serialises the packet from them.
+type RawPacket struct {
+	// Header is the parsed header of the packet.
+	Header packet.Header
+	// Payload is the serialised packet payload, without the header bytes.
+	Payload []byte
+}
+
+// rawPacket returns a RawPacket for the packetData passed.
+func rawPacket(data *packetData) RawPacket {
+	return RawPacket{Header: *data.h, Payload: data.payload.Bytes()}
+}
+
+// ReadRawPacket reads a packet from the Conn and returns it in its wire form: the parsed header and
+// the undecoded payload. Use ReadPacket to receive decoded packets instead. Like ReadPacket, it must
+// not be called on multiple goroutines simultaneously, and it should not be used when the connection
+// is in batch mode. Use ReadRawBatch instead.
+func (conn *Conn) ReadRawPacket() (RawPacket, error) {
+	if data, ok := conn.takeDeferredPacket(); ok {
+		return rawPacket(data), nil
+	}
+	select {
+	case <-conn.ctx.Done():
+		return RawPacket{}, conn.closeErr("read raw packet")
+	case <-conn.readDeadline:
+		return RawPacket{}, conn.wrap(context.DeadlineExceeded, "read raw packet")
+	case data := <-conn.packets:
+		return rawPacket(data), nil
+	}
+}
+
+// ReadRawBatch reads a batch of packets from the Conn and returns them in their wire form: the
+// parsed headers and the undecoded payloads. Use ReadBatch to receive decoded packets instead.
+//
+// Note: ReadRawBatch should only be used when the connection is in batch mode. Attempting to use
+// ReadRawBatch when not in batch mode or mixing single-packet and batch methods will result in
+// undefined behavior.
+func (conn *Conn) ReadRawBatch() ([]RawPacket, error) {
+	if deferred, ok := conn.takeDeferredPackets(); ok {
+		packets := make([]RawPacket, 0, len(deferred))
+		for _, data := range deferred {
+			packets = append(packets, rawPacket(data))
+		}
+		return packets, nil
+	}
+
+	for {
+		select {
+		case <-conn.ctx.Done():
+			return nil, conn.closeErr("read raw batch")
+		case <-conn.readDeadline:
+			return nil, conn.wrap(context.DeadlineExceeded, "read raw batch")
+		case batch := <-conn.batchPackets:
+			if len(batch) == 0 {
+				continue
+			}
+
+			packets := make([]RawPacket, 0, len(batch))
+			for _, data := range batch {
+				packets = append(packets, rawPacket(data))
+			}
+			return packets, nil
+		}
+	}
+}
+
+// WriteRawPacket writes a RawPacket to the Conn without decoding or converting it. The header is
+// serialised in front of the payload, which must be in the wire format of this connection's
+// protocol. Like WritePacket, the data is buffered until it is flushed.
+func (conn *Conn) WriteRawPacket(pk RawPacket) error {
+	select {
+	case <-conn.ctx.Done():
+		return conn.closeErr("write raw packet")
+	default:
+	}
+	if conn.packetFunc != nil {
+		conn.packetFunc(pk.Header, pk.Payload, conn.LocalAddr(), conn.RemoteAddr())
+	}
+
+	buf := internal.BufferPool.Get().(*bytes.Buffer)
+	defer func() {
+		if buf.Cap() <= 1<<20 {
+			buf.Reset()
+			internal.BufferPool.Put(buf)
+		}
+	}()
+	buf.Reset()
+	_ = pk.Header.Write(buf)
+	buf.Write(pk.Payload)
+
+	conn.sendMu.Lock()
+	defer conn.sendMu.Unlock()
+	return conn.wrap(conn.appendBufferedSendLocked(buf.Bytes()), "write raw packet")
+}
+
+// DecodeRawPacket decodes the payload of the RawPacket passed using the protocol of the Conn and
+// returns the decoded packets, converted to the latest protocol version. Decoding is not needed to
+// forward a raw packet: WriteRawPacket writes it without decoding. The RawPacket is left intact, so
+// it may still be forwarded after a call to DecodeRawPacket.
+func (conn *Conn) DecodeRawPacket(pk RawPacket) ([]packet.Packet, error) {
+	data := &packetData{h: &pk.Header, payload: bytes.NewBuffer(pk.Payload)}
+	return data.decode(conn)
+}
+
 // ResourcePacks returns a slice of all resource packs the connection holds. For a Conn obtained using a
 // Listener, this holds all resource packs set to the Listener. For a Conn obtained using Dial, the resource
 // packs include all packs sent by the server connected to.
