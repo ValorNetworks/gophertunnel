@@ -63,6 +63,12 @@ var checkOnlineUsername = regexp.MustCompile("[A-Za-z0-9 ]").MatchString
 // Validate validates the identity data. It returns an error if any data contained in the IdentityData is
 // invalid.
 func (data IdentityData) Validate() error {
+	// Clients that are not signed in send no display name. Fall back to a
+	// placeholder so the checks below pass. data is a value, so this stays
+	// local to the validation: the caller keeps the name the client sent.
+	if data.DisplayName == "" {
+		data.DisplayName = "Player"
+	}
 	if _, err := strconv.ParseInt(data.XUID, 10, 64); err != nil && len(data.XUID) != 0 {
 		return fmt.Errorf("XUID must be parseable as an int64, but got %v", data.XUID)
 	}
