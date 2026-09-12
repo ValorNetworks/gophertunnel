@@ -1,3 +1,5 @@
+github.com/ValorNetworks/go-raknet v0.0.0-20260912171643-ff3abea5648d h1:7Ft1uKh2c9tK0JjlbgfkW4xf3JCY1srcK0m3Vv5Eu4s=
+github.com/ValorNetworks/go-raknet v0.0.0-20260912171643-ff3abea5648d/go.mod h1:m8i0H2zIDryMgl0RLo/M/1BML0Oc6EpqgorBP9LgmKM=
 github.com/coder/websocket v1.8.14 h1:9L0p0iKiNOibykf283eHkKUHHrpG7f65OE3BhhO7v9g=
 github.com/coder/websocket v1.8.14/go.mod h1:NX3SzP+inril6yawo5CQXx8+fk145lPDC6pumgx0mVg=
 github.com/coreos/go-oidc/v3 v3.17.0 h1:hWBGaQfbi0iVviX4ibC7bk8OKT5qNr4klBaCHVNvehc=
@@ -20,8 +22,6 @@ github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=
 github.com/google/uuid v1.6.0/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+yHo=
 github.com/klauspost/compress v1.18.1 h1:bcSGx7UbpBqMChDtsF28Lw6v/G94LPrrbMbdC3JH2co=
 github.com/klauspost/compress v1.18.1/go.mod h1:ZQFFVG+MdnR0P+l6wpXgIL4NTtwiKIdBnrBd8Nrxr+0=
-github.com/oomph-ac/go-raknet v0.0.0-20260712222913-5b060358d845 h1:Yje1q/ggdoAVjsy4Zj6tCxEBAgxrw1X0n9cSM5eKhwE=
-github.com/oomph-ac/go-raknet v0.0.0-20260712222913-5b060358d845/go.mod h1:m8i0H2zIDryMgl0RLo/M/1BML0Oc6EpqgorBP9LgmKM=
 github.com/pelletier/go-toml v1.9.5 h1:4yBQzkHv+7BHq2PQUZF3Mx0IYxG7LsP222s7Agd3ve8=
 github.com/pelletier/go-toml v1.9.5/go.mod h1:u1nR/EPcESfeI/szUZKdtJ0xRNbUoANCkoOuaOx1Y+c=
 github.com/pion/datachannel v1.6.2 h1:7EXQ8TH3vTouBUdRWYbcX2edSx9Yj6k5zl5P+qyxEPc=

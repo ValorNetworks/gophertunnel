@@ -933,8 +933,8 @@ func (conn *Conn) SetWriteDeadline(time.Time) error {
 	return nil
 }
 
-// Latency returns a rolling average of latency between the sending and the receiving end of the connection.
-// The latency returned is updated continuously and is half the round trip time (RTT).
+// Latency returns the underlying transport's latency estimate. The selected
+// RakNet transport reports full ConnectedPing round-trip time, not half RTT.
 func (conn *Conn) Latency() time.Duration {
 	if c, ok := conn.conn.(interface {
 		Latency() time.Duration
