@@ -1396,27 +1396,6 @@ func (conn *Conn) handleLogin(pk *packet.Login) error {
 		return fmt.Errorf("parse login request: %w", err)
 	}
 
-	var majorVer, minorVer, patchVer int
-	_, _ = fmt.Sscanf(conn.clientData.GameVersion, "%d.%d.%d", &majorVer, &minorVer, &patchVer)
-	if majorVer == 1 && minorVer == 26 && patchVer < 44 {
-		for _, pro := range conn.acceptedProto {
-			if pro.ID() == protocol.CurrentProtocol {
-				var majorVer, minorVer, patchVer int
-				_, _ = fmt.Sscanf(pro.Ver(), "%d.%d.%d", &majorVer, &minorVer, &patchVer)
-				if majorVer == 1 && minorVer == 26 && patchVer < 44 {
-					conn.proto = pro
-					conn.pool = pro.Packets(true)
-					break
-				}
-			}
-		}
-
-		if conn.proto.Ver() == protocol.CurrentVersion {
-			_ = conn.WritePacket(&packet.PlayStatus{Status: packet.PlayStatusLoginFailedClient})
-			return fmt.Errorf("incompatible protocol game version: expected %s, got %s", protocol.CurrentVersion, conn.clientData.GameVersion)
-		}
-	}
-
 	// Make sure the player is logged in with XBOX Live when necessary.
 	if !authResult.XBOXLiveAuthenticated && conn.authEnabled {
 		_ = conn.WritePacket(&packet.Disconnect{Message: text.Colourf("<red>You must be logged in with XBOX Live to join.</red>")})
