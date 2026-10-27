@@ -64,3 +64,19 @@ func (b *offsetReader) Read(p []byte) (n int, err error) {
 	b.off += int64(n)
 	return
 }
+
+// readArrayBytes validates a fixed-width array before allocating its storage.
+func (b *offsetReader) readArrayBytes(count int32, width int, op string) ([]byte, error) {
+	if count < 0 {
+		return nil, InvalidLengthError{Off: b.off, Op: op, N: int(count)}
+	}
+	length := int64(count) * int64(width)
+	if length > int64(b.Reader.Len()) {
+		return nil, BufferOverrunError{Op: op}
+	}
+	data := make([]byte, int(length))
+	if _, err := b.Read(data); err != nil {
+		return nil, BufferOverrunError{Op: op}
+	}
+	return data, nil
+}

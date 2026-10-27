@@ -13,7 +13,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math"
 	"math/rand"
 	"net"
 	"net/http"
@@ -111,6 +110,11 @@ type Dialer struct {
 	// are converted from and to this Protocol.
 	Protocol Protocol
 
+	// MaxDecompressedLen is the maximum length of a decompressed packet batch to prevent potential exploits.
+	// If 0, the default value is 16MB (16 * 1024 * 1024). Setting this to a negative integer disables the
+	// limit.
+	MaxDecompressedLen int
+
 	// FlushRate is the rate at which packets sent are flushed. Packets are buffered for a duration up to
 	// FlushRate and are compressed/encrypted together to improve compression ratios. The lower this
 	// time.Duration, the lower the latency but the less efficient both network and cpu wise.
@@ -140,6 +144,9 @@ type Dialer struct {
 	// packets received in a single batch from the remote connection, which can improve performance
 	// for high-throughput scenarios. Do not mix ReadPacket() and ReadBatch() calls on the same connection.
 	EnableBatchReading bool
+
+	// DisablePortFollowing, if set to true, dials respect provided port instead of following the pong port.
+	DisablePortFollowing bool
 }
 
 // Dial dials a Minecraft connection to the address passed over the network passed. The network is typically
@@ -280,9 +287,10 @@ func (d Dialer) DialContextNetwork(ctx context.Context, network Network, address
 		d.IdentityData = identityData
 	}
 
-	var pong []byte
-	if pong, err = network.PingContext(ctx, address); err == nil {
-		address = addressWithPongPort(pong, address)
+	if !d.DisablePortFollowing {
+		if pong, err := network.PingContext(ctx, address); err == nil {
+			address = addressWithPongPort(pong, address)
+		}
 	}
 
 	var netConn net.Conn
@@ -305,7 +313,7 @@ func (d Dialer) DialContextNetwork(ctx context.Context, network Network, address
 	conn.cacheEnabled = d.EnableClientCache
 	conn.disconnectOnInvalidPacket = d.DisconnectOnInvalidPackets
 	conn.disconnectOnUnknownPacket = d.DisconnectOnUnknownPackets
-	conn.maxDecompressedLen = math.MaxInt
+	conn.maxDecompressedLen = d.MaxDecompressedLen
 	conn.batchMode = d.EnableBatchReading
 
 	defaultIdentityData(&conn.identityData)
@@ -349,7 +357,9 @@ func (d Dialer) DialContextNetwork(ctx context.Context, network Network, address
 		return nil, conn.closeErr("dial")
 	case <-readyForLogin:
 		// We've received our network settings, so we can now send our login request.
-		conn.expect(packet.IDServerToClientHandshake, packet.IDPlayStatus)
+		// ResourcePacksInfo is expected too: servers without encryption skip the handshake and some send it
+		// before PlayStatus(LoginSuccess).
+		conn.expect(packet.IDServerToClientHandshake, packet.IDPlayStatus, packet.IDResourcePacksInfo)
 		if err := conn.WritePacket(&packet.Login{ConnectionRequest: request, ClientProtocol: d.Protocol.ID()}); err != nil {
 			return nil, conn.wrap(fmt.Errorf("send login: %w", err), "dial")
 		}
@@ -412,13 +422,35 @@ func listenConn(conn *Conn, readyForLogin, connected chan struct{}, cancel conte
 	defer func() {
 		_ = conn.Close()
 	}()
+	if conn.batchMode {
+		listenBatchConn(conn, readyForLogin, connected, cancel)
+		return
+	}
 	cancelContext := true
 	for {
 		// We finally arrived at the packet decoding loop. We constantly decode packets that arrive
 		// and push them to the Conn so that they may be processed.
-		packets, err := conn.dec.Decode()
-		if err != nil {
-			if !errors.Is(err, net.ErrClosed) {
+		receiveErr := false
+		if err := conn.dec.DecodeFunc(func(data []byte) error {
+			loggedInBefore, readyToLoginBefore := conn.loggedIn, conn.readyToLogin
+			if err := conn.receive(data); err != nil {
+				receiveErr = true
+				return err
+			}
+			if !readyToLoginBefore && conn.readyToLogin {
+				// This is the signal that the connection is ready to login, so we put a value in the channel so that
+				// it may be detected.
+				readyForLogin <- struct{}{}
+			}
+			if !loggedInBefore && conn.loggedIn {
+				// This is the signal that the connection was considered logged in, so we put a value in the channel so
+				// that it may be detected.
+				cancelContext = false
+				connected <- struct{}{}
+			}
+			return nil
+		}); err != nil {
+			if receiveErr || !errors.Is(err, net.ErrClosed) {
 				if cancelContext {
 					cancel(err)
 				} else {
@@ -426,27 +458,6 @@ func listenConn(conn *Conn, readyForLogin, connected chan struct{}, cancel conte
 				}
 			}
 			return
-		}
-
-		loggedInBefore, readyToLoginBefore := conn.loggedIn, conn.readyToLogin
-		if err := conn.receiveMultiple(packets); err != nil {
-			if cancelContext {
-				cancel(err)
-			} else {
-				conn.log.Error(err.Error())
-			}
-			return
-		}
-		if !readyToLoginBefore && conn.readyToLogin {
-			// This is the signal that the connection is ready to login, so we put a value in the channel so that
-			// it may be detected.
-			readyForLogin <- struct{}{}
-		}
-		if !loggedInBefore && conn.loggedIn {
-			// This is the signal that the connection was considered logged in, so we put a value in the channel so
-			// that it may be detected.
-			cancelContext = false
-			connected <- struct{}{}
 		}
 	}
 }
@@ -597,4 +608,43 @@ func addressWithPongPort(pong []byte, address string) string {
 		return address + ":" + portStr
 	}
 	return address
+}
+
+// listenBatchConn preserves the batch boundary while processing login transitions.
+func listenBatchConn(conn *Conn, readyForLogin, connected chan struct{}, cancel context.CancelCauseFunc) {
+	cancelContext := true
+	for {
+		packets, err := conn.dec.Decode()
+		if err != nil {
+			if !errors.Is(err, net.ErrClosed) {
+				if cancelContext {
+					cancel(err)
+				} else {
+					conn.log.Error(err.Error())
+				}
+			}
+			return
+		}
+
+		loggedInBefore, readyToLoginBefore := conn.loggedIn, conn.readyToLogin
+		if err := conn.receiveMultiple(packets); err != nil {
+			if cancelContext {
+				cancel(err)
+			} else {
+				conn.log.Error(err.Error())
+			}
+			return
+		}
+		if !readyToLoginBefore && conn.readyToLogin {
+			// This is the signal that the connection is ready to login, so we put a value in the channel so that
+			// it may be detected.
+			readyForLogin <- struct{}{}
+		}
+		if !loggedInBefore && conn.loggedIn {
+			// This is the signal that the connection was considered logged in, so we put a value in the channel so
+			// that it may be detected.
+			cancelContext = false
+			connected <- struct{}{}
+		}
+	}
 }
