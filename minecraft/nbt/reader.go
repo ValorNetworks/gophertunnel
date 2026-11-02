@@ -60,6 +60,15 @@ func (b *offsetReader) Read(p []byte) (n int, err error) {
 	return
 }
 
+// collectionCapacity keeps streaming allocations proportional to decoded data.
+// Known-length inputs have already been bounds-checked and retain the fast path.
+func (b *offsetReader) collectionCapacity(length int) int {
+	if _, ok := b.Reader.(interface{ Len() int }); ok {
+		return length
+	}
+	return min(length, 1024)
+}
+
 // readArrayBytes validates a fixed-width array before allocating its storage.
 func (b *offsetReader) readArrayBytes(count int32, width int, op string) ([]byte, error) {
 	if count < 0 || int64(count) > int64(int(^uint(0)>>1)/width) {

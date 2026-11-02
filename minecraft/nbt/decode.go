@@ -257,12 +257,9 @@ func (d *Decoder) unmarshalTag(val reflect.Value, t tagType, tagName string) err
 		if length < 0 {
 			return InvalidLengthError{Off: d.r.off, Op: "ByteArray", N: int(length)}
 		}
-		if err = d.checkRemaining(int(length), "ByteArray"); err != nil {
+		b, err := d.r.readArrayBytes(length, 1, "ByteArray")
+		if err != nil {
 			return err
-		}
-		b := make([]byte, length)
-		if _, err := d.r.Read(b); err != nil {
-			return BufferOverrunError{Op: "ByteArray"}
 		}
 		value := reflect.New(reflect.ArrayOf(int(length), byteType)).Elem()
 		reflect.Copy(value, reflect.ValueOf(b))
@@ -348,12 +345,9 @@ func (d *Decoder) unmarshalTag(val reflect.Value, t tagType, tagName string) err
 				val.Set(reflect.MakeSlice(sliceType, int(length), int(length)))
 				break
 			}
-			if err = d.checkRemaining(int(length), "ByteSlice"); err != nil {
+			b, err := d.r.readArrayBytes(length, 1, "ByteSlice")
+			if err != nil {
 				return err
-			}
-			b := make([]byte, length)
-			if _, err := d.r.Read(b); err != nil {
-				return BufferOverrunError{Op: "ByteSlice"}
 			}
 			switch {
 			case k == reflect.Slice && val.Type().Elem().Kind() == reflect.Uint8, isAny(val):
@@ -396,8 +390,13 @@ func (d *Decoder) unmarshalTag(val reflect.Value, t tagType, tagName string) err
 			if err = d.checkRemaining(int(length), "List"); err != nil {
 				return err
 			}
-			v := reflect.MakeSlice(sliceType, int(length), int(length))
+			capacity := d.r.collectionCapacity(int(length))
+			v := reflect.MakeSlice(sliceType, capacity, capacity)
 			for i := 0; i < int(length); i++ {
+				if i == v.Len() {
+					v.Grow(1)
+					v.SetLen(i + 1)
+				}
 				if err := d.unmarshalTag(v.Index(i), listType, ""); err != nil {
 					// An error occurred during the decoding of one of the elements of the TAG_List, meaning it
 					// either had an invalid type or the NBT was invalid.
@@ -550,7 +549,7 @@ func (d *Decoder) tag() (t tagType, tagName string, err error) {
 }
 
 func (d *Decoder) checkRemaining(length int, op string) error {
-	if length > d.r.Reader.Len() {
+	if remaining, ok := d.r.Reader.(interface{ Len() int }); ok && length > remaining.Len() {
 		return BufferOverrunError{Op: op}
 	}
 	return nil

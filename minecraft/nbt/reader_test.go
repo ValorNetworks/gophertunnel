@@ -22,9 +22,10 @@ func TestFixedWidthArrayRejectsInvalidLengthBeforeAllocation(t *testing.T) {
 
 func TestFixedWidthArrayReadsExactBytes(t *testing.T) {
 	data := []byte{1, 2, 3, 4, 5, 6, 7, 8, 9}
-	reader := newOffsetReader(bytes.NewBuffer(data))
+	buffer := bytes.NewBuffer(data)
+	reader := newOffsetReader(buffer)
 	got, err := reader.readArrayBytes(2, 4, "test")
-	if err != nil || !bytes.Equal(got, data[:8]) || reader.off != 8 || reader.Reader.Len() != 1 {
-		t.Fatalf("read = %x, %v; offset=%d remaining=%d", got, err, reader.off, reader.Reader.Len())
+	if err != nil || !bytes.Equal(got, data[:8]) || reader.off != 8 || buffer.Len() != 1 {
+		t.Fatalf("read = %x, %v; offset=%d remaining=%d", got, err, reader.off, buffer.Len())
 	}
 }

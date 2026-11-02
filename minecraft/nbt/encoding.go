@@ -195,15 +195,16 @@ func (e networkLittleEndian) Int32Slice(r *offsetReader) ([]int32, error) {
 		return nil, InvalidLengthError{Off: r.off, Op: "Int32Slice", N: int(n)}
 	}
 	// Minimum for VarInt32 is 1 byte
-	if r.Reader.Len() < int(n) {
+	if remaining, ok := r.Reader.(interface{ Len() int }); ok && remaining.Len() < int(n) {
 		return nil, InvalidLengthError{Off: r.off, Op: "Int32Slice", N: int(n)}
 	}
-	m := make([]int32, n)
+	m := make([]int32, 0, r.collectionCapacity(int(n)))
 	for i := int32(0); i < n; i++ {
-		m[i], err = e.Int32(r)
+		value, err := e.Int32(r)
 		if err != nil {
 			return nil, BufferOverrunError{Op: "Int32Slice"}
 		}
+		m = append(m, value)
 	}
 	return m, nil
 }
@@ -218,15 +219,16 @@ func (e networkLittleEndian) Int64Slice(r *offsetReader) ([]int64, error) {
 		return nil, InvalidLengthError{Off: r.off, Op: "Int64Slice", N: int(n)}
 	}
 	// Minimum for VarInt64 is 1 byte
-	if r.Reader.Len() < int(n) {
+	if remaining, ok := r.Reader.(interface{ Len() int }); ok && remaining.Len() < int(n) {
 		return nil, InvalidLengthError{Off: r.off, Op: "Int64Slice", N: int(n)}
 	}
-	m := make([]int64, n)
+	m := make([]int64, 0, r.collectionCapacity(int(n)))
 	for i := int32(0); i < n; i++ {
-		m[i], err = e.Int64(r)
+		value, err := e.Int64(r)
 		if err != nil {
 			return nil, BufferOverrunError{Op: "Int64Slice"}
 		}
+		m = append(m, value)
 	}
 	return m, nil
 }
