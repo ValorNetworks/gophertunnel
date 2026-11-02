@@ -1,14 +1,13 @@
 package nbt
 
 import (
-	"bytes"
 	"io"
 )
 
 // offsetReader is a wrapper around an io.Reader, used to track the offset (amount of bytes read) of the data
 // that is being read, so that errors may have offset data.
 type offsetReader struct {
-	Reader *bytes.Buffer
+	Reader io.Reader
 	off    int64
 	buf    [8]byte
 
@@ -21,7 +20,7 @@ type offsetReader struct {
 // newOffsetReader returns a new offset reader for the io.Reader passed, setting the ReadByte and Next
 // functions as appropriate for that particular reader.
 func newOffsetReader(r io.Reader) *offsetReader {
-	reader := &offsetReader{Reader: r.(*bytes.Buffer)}
+	reader := &offsetReader{Reader: r}
 	if byteReader, ok := r.(io.ByteReader); ok {
 		reader.ReadByte = func() (byte, error) {
 			b, err := byteReader.ReadByte()
@@ -32,12 +31,8 @@ func newOffsetReader(r io.Reader) *offsetReader {
 		}
 	} else {
 		reader.ReadByte = func() (byte, error) {
-			data := make([]byte, 1)
-			n, err := io.ReadAtLeast(reader, data, 1)
-			if n == 1 && err == nil {
-				reader.off++
-			}
-			return data[0], err
+			_, err := reader.Read(reader.buf[:1])
+			return reader.buf[0], err
 		}
 	}
 	if r, ok := r.(interface {
@@ -67,15 +62,25 @@ func (b *offsetReader) Read(p []byte) (n int, err error) {
 
 // readArrayBytes validates a fixed-width array before allocating its storage.
 func (b *offsetReader) readArrayBytes(count int32, width int, op string) ([]byte, error) {
-	if count < 0 {
+	if count < 0 || int64(count) > int64(int(^uint(0)>>1)/width) {
 		return nil, InvalidLengthError{Off: b.off, Op: op, N: int(count)}
 	}
 	length := int64(count) * int64(width)
-	if length > int64(b.Reader.Len()) {
-		return nil, BufferOverrunError{Op: op}
+	if remaining, ok := b.Reader.(interface{ Len() int }); ok {
+		if length > int64(remaining.Len()) {
+			return nil, BufferOverrunError{Op: op}
+		}
+		data := make([]byte, int(length))
+		if _, err := b.Read(data); err != nil {
+			return nil, BufferOverrunError{Op: op}
+		}
+		return data, nil
 	}
-	data := make([]byte, int(length))
-	if _, err := b.Read(data); err != nil {
+	// Streaming inputs have no known remaining length. Allocate only for bytes
+	// actually received, never for an untrusted advertised array length.
+	data, err := io.ReadAll(io.LimitReader(b.Reader, length))
+	b.off += int64(len(data))
+	if err != nil || int64(len(data)) != length {
 		return nil, BufferOverrunError{Op: op}
 	}
 	return data, nil
