@@ -81,7 +81,10 @@ var exemptedPacks = []exemptedResourcePack{
 type Conn struct {
 	// once is used to ensure the Conn is closed only a single time. It protects the channel below from being
 	// closed multiple times.
-	once       sync.Once
+	once sync.Once
+	// abortOnce bounds asynchronous transport shutdown requests independently
+	// of a graceful Close that may already be waiting for a writer.
+	abortOnce  sync.Once
 	ctx        context.Context
 	cancelFunc context.CancelCauseFunc
 
@@ -452,7 +455,11 @@ func (conn *Conn) WritePacket(pk packet.Packet) error {
 		}
 	}()
 
-	for _, converted := range conn.proto.ConvertFromLatest(pk, conn) {
+	convertedPackets := conn.proto.ConvertFromLatest(pk, conn)
+	if conn.ctx.Err() != nil {
+		return conn.closeErr("write packet")
+	}
+	for _, converted := range convertedPackets {
 		l, err := conn.marshalPacketLocked(buf, converted, 0, 0)
 		if err != nil {
 			for i := startPackets; i < len(conn.bufferedSend); i++ {
@@ -870,7 +877,11 @@ func (conn *Conn) flushSingle(pk packet.Packet, encode func([][]byte) error) err
 
 	thisBufferedSend := make([][]byte, 0, 1)
 	thisBufferedSendBytes := 0
-	for _, converted := range conn.proto.ConvertFromLatest(pk, conn) {
+	convertedPackets := conn.proto.ConvertFromLatest(pk, conn)
+	if conn.ctx.Err() != nil {
+		return conn.closeErr("write packet")
+	}
+	for _, converted := range convertedPackets {
 		l, err := conn.marshalPacketLocked(buf, converted, len(thisBufferedSend), thisBufferedSendBytes)
 		if err != nil {
 			return conn.wrap(err, "write packet")
@@ -901,6 +912,22 @@ func (conn *Conn) flushSingle(pk packet.Packet, encode func([][]byte) error) err
 // packets currently pending are sent out.
 func (conn *Conn) Close() error {
 	return conn.close(net.ErrClosed)
+}
+
+// Abort cancels Conn immediately and schedules transport shutdown without
+// flushing buffered packets. It does not wait for network I/O or packet-writing
+// locks, so protocol converters may call it when a packet cannot be served.
+// Repeated calls schedule at most one shutdown; the first cancellation cause is
+// retained. A nil cause is treated as net.ErrClosed. Use Close for graceful
+// shutdown that should send pending packets.
+func (conn *Conn) Abort(cause error) {
+	if cause == nil {
+		cause = net.ErrClosed
+	}
+	conn.abortOnce.Do(func() {
+		conn.cancelFunc(cause)
+		go conn.closeTransport(cause)
+	})
 }
 
 // LocalAddr returns the local address of the underlying connection.
