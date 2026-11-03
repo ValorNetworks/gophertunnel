@@ -1,6 +1,7 @@
 package packet
 
 import (
+	"github.com/go-gl/mathgl/mgl32"
 	"github.com/sandertv/gophertunnel/minecraft/protocol"
 )
 
@@ -26,6 +27,10 @@ type UpdateClientInputLocks struct {
 	// move, rotate the camera, jump, sneak or mount/dismount entities. It is a combination of the
 	// ClientInputLock constants above.
 	Locks uint32
+	// Position carries the player's network position for protocol adapters that
+	// target clients before 1.26.10. The native protocol no longer serializes it.
+	// Senders must capture it when changing permissions, including unlocking.
+	Position mgl32.Vec3
 }
 
 // ID ...
