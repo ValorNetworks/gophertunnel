@@ -2,6 +2,7 @@ package minecraft
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -111,8 +112,8 @@ type Dialer struct {
 	Protocol Protocol
 
 	// MaxDecompressedLen is the maximum length of a decompressed packet batch to prevent potential exploits.
-	// If 0, the default value is 16MB (16 * 1024 * 1024). Setting this to a negative integer disables the
-	// limit.
+	// If 0, the default value is 64MB (64 * 1024 * 1024), the vanilla client's limit. Setting this to a
+	// negative integer disables the limit.
 	MaxDecompressedLen int
 
 	// FlushRate is the rate at which packets sent are flushed. Packets are buffered for a duration up to
@@ -294,7 +295,7 @@ func (d Dialer) DialContextNetwork(ctx context.Context, network Network, address
 	}
 
 	var netConn net.Conn
-	if i, ok := network.(identityDialer); ok && token != "" {
+	if i, ok := network.(identityDialer); ok {
 		netConn, err = i.DialContextIdentity(ctx, address, token, key)
 	} else {
 		netConn, err = network.DialContext(ctx, address)
@@ -304,6 +305,11 @@ func (d Dialer) DialContextNetwork(ctx context.Context, network Network, address
 	}
 
 	conn = newConn(netConn, key, d.ErrorLog, d.Protocol, d.FlushRate, false)
+	defer func(c *Conn) {
+		if err != nil {
+			c.closeTransport(err)
+		}
+	}(conn)
 	conn.pool = conn.proto.Packets(false)
 	conn.identityData = d.IdentityData
 	conn.clientData = d.ClientData
@@ -313,7 +319,7 @@ func (d Dialer) DialContextNetwork(ctx context.Context, network Network, address
 	conn.cacheEnabled = d.EnableClientCache
 	conn.disconnectOnInvalidPacket = d.DisconnectOnInvalidPackets
 	conn.disconnectOnUnknownPacket = d.DisconnectOnUnknownPackets
-	conn.maxDecompressedLen = d.MaxDecompressedLen
+	conn.maxDecompressedLen = cmp.Or(d.MaxDecompressedLen, packet.DefaultClientMaxDecompressedLen)
 	conn.batchMode = d.EnableBatchReading
 
 	defaultIdentityData(&conn.identityData)
@@ -340,8 +346,9 @@ func (d Dialer) DialContextNetwork(ctx context.Context, network Network, address
 		conn.identityData = identityData
 	}
 
-	readyForLogin, connected := make(chan struct{}), make(chan struct{})
+	readyForLogin, connected := make(chan struct{}, 1), make(chan struct{}, 1)
 	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
 	go listenConn(conn, readyForLogin, connected, cancel)
 
 	conn.expect(packet.IDNetworkSettings, packet.IDPlayStatus)
